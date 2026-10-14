@@ -39,12 +39,13 @@ const protect = async (req, res, next) => {
 
     // Use the role stored in the database, not the token alone.
     req.user = {
-      userId: user._id.toString(),
-      name: user.name,
-      phoneNumber: user.phoneNumber,
-      role: user.role,
-      shop: user.shop,
-    };
+  _id: user._id,
+  userId: user._id.toString(),
+  name: user.name,
+  phoneNumber: user.phoneNumber,
+  role: user.role,
+  shop: user.shop,
+};
 
     next();
   } catch (error) {

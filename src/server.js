@@ -7,7 +7,9 @@ const connectDB = require("./config/db");
 
 const shopRoutes = require("./routes/shopRoutes");
 const authRoutes = require("./routes/authRoutes");
-
+const productRoutes = require("./routes/productRoutes");
+const offerRoutes = require("./routes/offerRoutes");
+const orderRoutes = require("./routes/orderRoutes");
 
 const app = express();
 
@@ -30,7 +32,9 @@ app.use(express.json());
 
 app.use("/api/shops", shopRoutes);
 app.use("/api/auth", authRoutes);
-
+app.use("/api/products", productRoutes);
+app.use("/api/offers", offerRoutes);
+app.use("/api/orders", orderRoutes);
 
 // Test route
 app.get("/", (req, res) => {
@@ -49,5 +53,6 @@ const startServer = async () => {
     console.log(`Kadai Edu server running on port ${PORT}`);
   });
 };
+
 
 startServer();

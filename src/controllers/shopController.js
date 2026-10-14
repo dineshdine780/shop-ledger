@@ -1,6 +1,7 @@
-
 const Shop = require("../models/Shop");
+const User = require("../models/User");
 
+// CREATE - Add a new shop
 // CREATE - Add a new shop
 const createShop = async (req, res) => {
   try {
@@ -25,6 +26,14 @@ const createShop = async (req, res) => {
       });
     }
 
+    // Validate shop mobile number
+    if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid 10-digit mobile number",
+      });
+    }
+
     const shop = await Shop.create({
       shopName,
       category,
@@ -33,22 +42,20 @@ const createShop = async (req, res) => {
       mobileNumber,
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Shop created successfully",
       shop,
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 };
 
-
-
- // ADMIN DASHBOARD - Get shop statistics
+// ADMIN DASHBOARD - Get shop statistics
 const getShopStats = async (req, res) => {
   try {
     const totalShops = await Shop.countDocuments();
