@@ -100,14 +100,14 @@ const orderSchema = new mongoose.Schema(
       },
     },
 
-    // Amount before discounts
+    
     subtotal: {
       type: Number,
       required: true,
       min: 0,
     },
 
-    // Total discount calculated by the backend
+    
     discountAmount: {
       type: Number,
       required: true,
@@ -115,11 +115,37 @@ const orderSchema = new mongoose.Schema(
       default: 0,
     },
 
-    // Offers applied when the order was created
+  
     appliedOffers: {
       type: [appliedOfferSchema],
       default: [],
     },
+    
+couponDiscountAmount: {
+  type: Number,
+  min: 0,
+  default: 0,
+},
+
+
+appliedCoupon: {
+  coupon: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Coupon",
+    default: null,
+  },
+  code: {
+    type: String,
+    default: "",
+  },
+  discountAmount: {
+    type: Number,
+    min: 0,
+    default: 0,
+  },
+},
+
+
 
     // Final payable amount after discounts
     totalAmount: {
