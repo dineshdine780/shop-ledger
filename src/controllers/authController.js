@@ -112,6 +112,7 @@ const registerUser = async (req, res) => {
   }
 };
 
+
 // CREATE OWNER — admin authentication is required at the route
 const createOwner = async (req, res) => {
   try {

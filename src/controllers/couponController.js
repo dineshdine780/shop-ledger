@@ -60,6 +60,7 @@ const validateShops = async (data) => {
   return count === uniqueShopIds.length;
 };
 
+
 const getAllCoupons = async (req, res) => {
   try {
     const coupons = await Coupon.find()
@@ -113,6 +114,57 @@ const getAvailableCoupons = async (req, res) => {
     });
   }
 };
+
+
+
+const getOwnerCoupons = async (req, res) => {
+  try {
+    const Shop = require("../models/Shop");
+
+    // Find shops matching the logged-in owner's phone number
+    const shops = await Shop.find({
+      mobileNumber: req.user.phoneNumber,
+    }).select("_id shopName mobileNumber");
+
+    const shopIds = shops.map((shop) => shop._id);
+
+    // No matching shop means no coupons
+    if (shopIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        shops,
+        coupons: [],
+      });
+    }
+
+    // Only coupons explicitly assigned to this owner's shops
+    const coupons = await Coupon.find({
+      appliesToAllShops: false,
+      shops: { $in: shopIds },
+    })
+      .populate("shops", "shopName mobileNumber")
+      .select(
+        "code discountType discountValue minimumPurchase maximumDiscount appliesToAllShops shops usageLimit usedCount oneUsePerUser startDate endDate isActive createdAt"
+      )
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      shops,
+      coupons,
+    });
+  } catch (error) {
+    console.error("Get owner coupons error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "உங்கள் கடையின் கூப்பன்களைப் பெற முடியவில்லை.",
+    });
+  }
+};
+
+
+
 
 
 
@@ -264,6 +316,7 @@ const updateCoupon = async (req, res) => {
   }
 };
 
+
 const deleteCoupon = async (req, res) => {
   try {
     const coupon = await Coupon.findById(req.params.id);
@@ -302,6 +355,7 @@ const deleteCoupon = async (req, res) => {
 module.exports = {
   getAllCoupons,
   getAvailableCoupons,
+  getOwnerCoupons,
   createCoupon,
   updateCoupon,
   deleteCoupon,

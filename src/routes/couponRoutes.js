@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   getAllCoupons,
   getAvailableCoupons,
+  getOwnerCoupons,
   createCoupon,
   updateCoupon,
   deleteCoupon,
@@ -20,6 +21,13 @@ router.get(
   getAvailableCoupons
 );
 
+router.get(
+  "/owner",
+  protect,
+  authorizeRoles("owner"),
+  getOwnerCoupons
+);
+
 // Admin-only routes
 router.use(protect, authorizeRoles("admin"));
 
@@ -27,5 +35,7 @@ router.get("/", getAllCoupons);
 router.post("/", createCoupon);
 router.put("/:id", updateCoupon);
 router.delete("/:id", deleteCoupon);
-
+   
 module.exports = router;
+
+

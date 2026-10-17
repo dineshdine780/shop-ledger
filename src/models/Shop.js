@@ -32,6 +32,11 @@ const shopSchema = new mongoose.Schema(
       required: true,
       match: /^\d{10}$/,
     },
+    owner: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "User",
+  default: null,
+},
   },
   {
     timestamps: true,

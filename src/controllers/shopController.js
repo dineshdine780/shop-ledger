@@ -40,6 +40,7 @@ const createShop = async (req, res) => {
       area,
       pincode,
       mobileNumber,
+      owner: req.user._id,
     });
 
     return res.status(201).json({
