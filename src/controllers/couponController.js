@@ -167,7 +167,6 @@ const getOwnerCoupons = async (req, res) => {
 
 
 
-
 const createCoupon = async (req, res) => {
   try {
     const data = normalizeCouponData(req.body);
