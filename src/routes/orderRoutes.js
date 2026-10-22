@@ -1,4 +1,3 @@
-
 const express = require("express");
 const router = express.Router();
 
@@ -9,6 +8,7 @@ const {
   getOwnerOrders,
   updateOrderStatus,
   updatePaymentStatus,
+  updateOwnerOrderItems,
 } = require("../controllers/orderController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -21,6 +21,13 @@ router.get("/my", protect, authorizeRoles("user"), getMyOrders);
 
 // Owner routes
 router.get("/owner", protect, authorizeRoles("owner"), getOwnerOrders);
+
+router.patch(
+  "/:id/items",
+  protect,
+  authorizeRoles("owner"),
+  updateOwnerOrderItems
+);
 
 router.patch(
   "/:id/status",

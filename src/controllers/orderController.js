@@ -647,20 +647,12 @@ const getOwnerOrders = async (req, res) => {
   }
 };
 
-// Update order status
-const updateOrderStatus = async (req, res) => {
+
+// Update order item quantities before processing starts
+const updateOwnerOrderItems = async (req, res) => {
   try {
     const { id } = req.params;
-    const { orderStatus } = req.body;
-
-    const allowedStatuses = [
-      "placed",
-      "confirmed",
-      "processing",
-      "ready",
-      "delivered",
-      "cancelled",
-    ];
+    const { items } = req.body;
 
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
@@ -669,10 +661,10 @@ const updateOrderStatus = async (req, res) => {
       });
     }
 
-    if (!allowedStatuses.includes(orderStatus)) {
+    if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Invalid order status.",
+        message: "At least one item is required.",
       });
     }
 
@@ -694,21 +686,391 @@ const updateOrderStatus = async (req, res) => {
       });
     }
 
-    order.orderStatus = orderStatus;
+    if (!["placed", "confirmed"].includes(order.orderStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantity can only be changed before processing.",
+      });
+    }
+
+    if (order.stockDeducted) {
+      return res.status(400).json({
+        success: false,
+        message: "Stock has already been deducted.",
+      });
+    }
+
+    // Only allow products that already exist in this order.
+    const requestedQuantities = new Map();
+
+    for (const item of items) {
+      if (
+        !mongoose.isValidObjectId(item.productId) ||
+        !Number.isSafeInteger(item.quantity) ||
+        item.quantity < 1
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid product or quantity.",
+        });
+      }
+
+      const productId = item.productId.toString();
+
+      requestedQuantities.set(
+        productId,
+        (requestedQuantities.get(productId) || 0) + item.quantity
+      );
+    }
+
+    const existingProductIds = new Set(
+      order.items.map((item) => item.product.toString())
+    );
+
+    for (const productId of requestedQuantities.keys()) {
+      if (!existingProductIds.has(productId)) {
+        return res.status(400).json({
+          success: false,
+          message: "New products cannot be added through quantity editing.",
+        });
+      }
+    }
+
+    const updatedItems = [];
+
+    for (const oldItem of order.items) {
+      const productId = oldItem.product.toString();
+      const quantity = requestedQuantities.get(productId);
+
+      // A missing product means the client omitted an existing order item.
+      if (quantity === undefined) {
+        return res.status(400).json({
+          success: false,
+          message: "Please include every existing order item.",
+        });
+      }
+
+      const product = await Product.findOne({
+        _id: oldItem.product,
+        shop: order.shop,
+      });
+
+      if (!product) {
+        return res.status(400).json({
+          success: false,
+          message: `${oldItem.productName} is no longer available.`,
+        });
+      }
+
+      if (product.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${oldItem.productName}.`,
+        });
+      }
+
+      updatedItems.push({
+        product: oldItem.product,
+        productName: oldItem.productName,
+        price: oldItem.price,
+        quantity,
+      });
+    }
+
+    const newSubtotal = money(
+      updatedItems.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0
+      )
+    );
+
+    // Recalculate current automatic offers without changing coupon usage.
+    const productSubtotals = new Map();
+
+    for (const item of updatedItems) {
+      const productId = item.product.toString();
+      const lineTotal = money(item.price * item.quantity);
+
+      productSubtotals.set(
+        productId,
+        money((productSubtotals.get(productId) || 0) + lineTotal)
+      );
+    }
+
+    const offerResult = await calculateOffers({
+      shopId: order.shop,
+      productSubtotals,
+    });
+
+    const discountAmount = money(
+      Math.min(offerResult.discountAmount, newSubtotal)
+    );
+
+    const payableAfterOffers = money(
+      Math.max(0, newSubtotal - discountAmount)
+    );
+
+    let couponDiscountAmount = 0;
+    let appliedCoupon = {
+      coupon: null,
+      code: "",
+      discountAmount: 0,
+    };
+
+    // Preserve and recalculate the coupon already attached to this order.
+    if (order.appliedCoupon?.coupon) {
+      const coupon = await Coupon.findById(order.appliedCoupon.coupon);
+      const now = new Date();
+
+      if (
+        !coupon ||
+        !coupon.isActive ||
+        coupon.startDate > now ||
+        coupon.endDate < now ||
+        (!coupon.appliesToAllShops &&
+          !coupon.shops.some(
+            (shopId) => shopId.toString() === order.shop.toString()
+          )) ||
+        newSubtotal < coupon.minimumPurchase
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "The existing coupon is no longer valid for this updated order. Quantity was not changed.",
+        });
+      }
+
+      let couponDiscount =
+        coupon.discountType === "percentage"
+          ? (payableAfterOffers * coupon.discountValue) / 100
+          : coupon.discountValue;
+
+      if (
+        coupon.discountType === "percentage" &&
+        coupon.maximumDiscount != null
+      ) {
+        couponDiscount = Math.min(
+          couponDiscount,
+          coupon.maximumDiscount
+        );
+      }
+
+      couponDiscountAmount = money(
+        Math.min(couponDiscount, payableAfterOffers)
+      );
+
+      appliedCoupon = {
+        coupon: coupon._id,
+        code: coupon.code,
+        discountAmount: couponDiscountAmount,
+      };
+    }
+
+    order.items = updatedItems;
+    order.subtotal = newSubtotal;
+    order.discountAmount = discountAmount;
+    order.appliedOffers = offerResult.appliedOffers;
+    order.couponDiscountAmount = couponDiscountAmount;
+    order.appliedCoupon = appliedCoupon;
+    order.totalAmount = money(
+      Math.max(0, payableAfterOffers - couponDiscountAmount)
+    );
+
     await order.save();
 
     return res.status(200).json({
       success: true,
-      message: "Order status updated successfully.",
+      message: "Order quantities updated successfully.",
       order,
+    });
+  } catch (error) {
+    console.error("Update order quantities error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update order quantities.",
+    });
+  }
+};
+
+
+
+// Update order status and manage stock safely
+const updateOrderStatus = async (req, res) => {
+  const { id } = req.params;
+  const { orderStatus } = req.body;
+
+  const allowedStatuses = [
+    "confirmed",
+    "processing",
+    "ready",
+    "delivered",
+    "cancelled",
+  ];
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid order ID.",
+    });
+  }
+
+  if (!allowedStatuses.includes(orderStatus)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid order status.",
+    });
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    let updatedOrder;
+
+    await session.withTransaction(async () => {
+      const shops = await Shop.find({
+        mobileNumber: req.user.phoneNumber,
+      })
+        .select("_id")
+        .session(session);
+
+      const shopIds = shops.map((shop) => shop._id);
+
+      const order = await Order.findOne({
+        _id: id,
+        shop: { $in: shopIds },
+      }).session(session);
+
+      if (!order) {
+        throw Object.assign(new Error("Order not found."), {
+          statusCode: 404,
+        });
+      }
+
+      const allowedTransitions = {
+        placed: ["confirmed", "cancelled"],
+        confirmed: ["processing", "cancelled"],
+        processing: ["ready", "cancelled"],
+        ready: ["delivered", "cancelled"],
+        delivered: [],
+        cancelled: [],
+      };
+
+      if (!allowedTransitions[order.orderStatus].includes(orderStatus)) {
+        throw Object.assign(
+          new Error(
+            `Cannot change order status from ${order.orderStatus} to ${orderStatus}.`
+          ),
+          { statusCode: 400 }
+        );
+      }
+
+      // Deduct stock exactly when processing begins.
+      if (orderStatus === "processing" && !order.stockDeducted) {
+        // Combine duplicate product entries before stock operations.
+        const quantities = new Map();
+
+        for (const item of order.items) {
+          const productId = item.product.toString();
+
+          quantities.set(
+            productId,
+            (quantities.get(productId) || 0) + item.quantity
+          );
+        }
+
+        for (const [productId, quantity] of quantities) {
+          const product = await Product.findOneAndUpdate(
+            {
+              _id: productId,
+              shop: order.shop,
+              stock: { $gte: quantity },
+            },
+            {
+              $inc: { stock: -quantity },
+            },
+            {
+              new: true,
+              session,
+            }
+          );
+
+          if (!product) {
+            throw Object.assign(
+              new Error(
+                "Insufficient stock. The order cannot move to processing."
+              ),
+              { statusCode: 400 }
+            );
+          }
+        }
+
+        order.stockDeducted = true;
+      }
+
+      // Restore stock only if it was previously deducted.
+      if (orderStatus === "cancelled" && order.stockDeducted) {
+        const quantities = new Map();
+
+        for (const item of order.items) {
+          const productId = item.product.toString();
+
+          quantities.set(
+            productId,
+            (quantities.get(productId) || 0) + item.quantity
+          );
+        }
+
+        for (const [productId, quantity] of quantities) {
+          const product = await Product.findOneAndUpdate(
+            {
+              _id: productId,
+              shop: order.shop,
+            },
+            {
+              $inc: { stock: quantity },
+            },
+            {
+              new: true,
+              session,
+            }
+          );
+
+          if (!product) {
+            throw Object.assign(
+              new Error(
+                "A product could not be found while restoring stock."
+              ),
+              { statusCode: 400 }
+            );
+          }
+        }
+
+        order.stockDeducted = false;
+      }
+
+      order.orderStatus = orderStatus;
+      await order.save({ session });
+
+      updatedOrder = order;
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Order status updated successfully.",
+      order: updatedOrder,
     });
   } catch (error) {
     console.error("Update order status error:", error);
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Failed to update order status.",
+      message: error.statusCode
+        ? error.message
+        : "Failed to update order status.",
     });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -782,4 +1144,5 @@ module.exports = {
   getOwnerOrders,
   updateOrderStatus,
   updatePaymentStatus,
+  updateOwnerOrderItems,
 };

@@ -179,6 +179,11 @@ appliedCoupon: {
       default: "placed",
     },
 
+    stockDeducted: {
+      type: Boolean,
+      default: false,
+    },
+
     notes: {
       type: String,
       default: "",
