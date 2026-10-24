@@ -13,6 +13,7 @@ const {
 
 const { protect } = require("../middleware/authMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
+const { markNotificationAsRead } = require("../controllers/notificationController");
 
 // Customer routes
 router.post("/preview", protect, authorizeRoles("user"), previewOrder);
@@ -42,5 +43,6 @@ router.patch(
   authorizeRoles("owner"),
   updatePaymentStatus
 );
+
 
 module.exports = router;

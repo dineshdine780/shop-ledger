@@ -6,6 +6,8 @@ const Shop = require("../models/Shop");
 const Product = require("../models/Product");
 const Offer = require("../models/Offer");
 const Coupon = require("../models/Coupon");
+const Notification = require("../models/Notification");
+
 
 // Round money values to 2 decimal places
 const money = (value) =>
@@ -895,6 +897,22 @@ const updateOwnerOrderItems = async (req, res) => {
 
 
 
+const getOrderStatusTamil = (status) => {
+  const statusLabels = {
+    placed: "ஆர்டர் பதிவு செய்யப்பட்டது",
+    confirmed: "ஆர்டர் உறுதிப்படுத்தப்பட்டது",
+    processing: "ஆர்டர் தயாராகிக் கொண்டிருக்கிறது",
+    ready: "ஆர்டர் பெறத் தயாராக உள்ளது",
+    delivered: "ஆர்டர் வழங்கப்பட்டது",
+    cancelled: "ஆர்டர் ரத்து செய்யப்பட்டது",
+  };
+
+  return statusLabels[status] || status;
+};
+
+
+
+// Update order status and manage stock safely
 // Update order status and manage stock safely
 const updateOrderStatus = async (req, res) => {
   const { id } = req.params;
@@ -927,6 +945,7 @@ const updateOrderStatus = async (req, res) => {
   try {
     let updatedOrder;
 
+    // Update order and stock inside a transaction
     await session.withTransaction(async () => {
       const shops = await Shop.find({
         mobileNumber: req.user.phoneNumber,
@@ -947,6 +966,7 @@ const updateOrderStatus = async (req, res) => {
         });
       }
 
+      // Allowed order status transitions
       const allowedTransitions = {
         placed: ["confirmed", "cancelled"],
         confirmed: ["processing", "cancelled"],
@@ -956,7 +976,9 @@ const updateOrderStatus = async (req, res) => {
         cancelled: [],
       };
 
-      if (!allowedTransitions[order.orderStatus].includes(orderStatus)) {
+      if (
+        !allowedTransitions[order.orderStatus]?.includes(orderStatus)
+      ) {
         throw Object.assign(
           new Error(
             `Cannot change order status from ${order.orderStatus} to ${orderStatus}.`
@@ -965,11 +987,11 @@ const updateOrderStatus = async (req, res) => {
         );
       }
 
-      // Deduct stock exactly when processing begins.
+      // Deduct stock when processing begins
       if (orderStatus === "processing" && !order.stockDeducted) {
-        // Combine duplicate product entries before stock operations.
         const quantities = new Map();
 
+        // Combine duplicate product entries
         for (const item of order.items) {
           const productId = item.product.toString();
 
@@ -1008,7 +1030,7 @@ const updateOrderStatus = async (req, res) => {
         order.stockDeducted = true;
       }
 
-      // Restore stock only if it was previously deducted.
+      // Restore stock when a stock-deducted order is cancelled
       if (orderStatus === "cancelled" && order.stockDeducted) {
         const quantities = new Map();
 
@@ -1049,11 +1071,35 @@ const updateOrderStatus = async (req, res) => {
         order.stockDeducted = false;
       }
 
+      // Save the updated order status
       order.orderStatus = orderStatus;
+
       await order.save({ session });
 
       updatedOrder = order;
     });
+
+    // Create a notification after the transaction succeeds
+    if (updatedOrder.customer) {
+      try {
+        const statusTamil = getOrderStatusTamil(
+          updatedOrder.orderStatus
+        );
+
+        await Notification.create({
+          user: updatedOrder.customer,
+          order: updatedOrder._id,
+          title: "ஆர்டர் நிலை புதுப்பிக்கப்பட்டது",
+          message: `ஆர்டர் #${updatedOrder.orderNumber}: ${statusTamil}.`,
+        });
+      } catch (notificationError) {
+        // Notification failure should not undo the successful order update
+        console.error(
+          "Failed to create order notification:",
+          notificationError
+        );
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -1073,6 +1119,7 @@ const updateOrderStatus = async (req, res) => {
     await session.endSession();
   }
 };
+
 
 // Update payment status
 const updatePaymentStatus = async (req, res) => {

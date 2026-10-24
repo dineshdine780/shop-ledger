@@ -1,9 +1,80 @@
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
 
-// REGISTER ADMIN — initial setup only
+const User = require("../models/User");
+const Shop = require("../models/Shop");
+const LoginHistory = require("../models/LoginHistory");
+const { verifyCaptcha } = require("../utils/captcha");
+
+const PHONE_REGEX = /^[6-9]\d{9}$/;
+
+const normalizePhone = (value) =>
+  typeof value === "string" ? value.trim() : "";
+
+const publicUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  phoneNumber: user.phoneNumber,
+  role: user.role,
+  shop: user.shop || null,
+});
+
+const createToken = (user) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is missing from .env");
+  }
+
+  return jwt.sign(
+    { userId: user._id.toString() },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: "1h",
+      issuer: "kadai-edu",
+      audience: "kadai-edu-users",
+    }
+  );
+};
+
+const recordLogin = async (req, data) => {
+  try {
+    await LoginHistory.create({
+      phoneNumber: data.phoneNumber || "unknown",
+      role: data.role || null,
+      user: data.userId || null,
+      status: data.status,
+      reason: data.reason,
+      ipAddress: req.ip || null,
+      userAgent: req.get("user-agent") || null,
+    });
+  } catch (error) {
+    console.error("Login history error:", error.message);
+  }
+};
+
+// Validate CAPTCHA on the backend.
+const validateCaptcha = (req, res) => {
+  const { captchaId, captchaAnswer } = req.body;
+
+  const valid =
+    typeof captchaId === "string" &&
+    typeof captchaAnswer === "string" &&
+    verifyCaptcha(captchaId, captchaAnswer);
+
+  if (!valid) {
+    res.status(400).json({
+      success: false,
+      message:
+        "CAPTCHA தவறானது அல்லது காலாவதியாகிவிட்டது. புதிய CAPTCHA முயற்சிக்கவும்.",
+    });
+
+    return false;
+  }
+
+  return true;
+};
+
+// ADMIN REGISTRATION — initial setup only.
 const registerUser = async (req, res) => {
   try {
     const { name, phoneNumber, password, role } = req.body;
@@ -28,344 +99,383 @@ const registerUser = async (req, res) => {
       });
     }
 
+    if (!validateCaptcha(req, res)) return;
+
+    const phone = normalizePhone(phoneNumber);
+
     if (
       typeof name !== "string" ||
-      typeof phoneNumber !== "string" ||
+      !name.trim() ||
+      !PHONE_REGEX.test(phone) ||
       typeof password !== "string" ||
-      !name.trim()
+      password.length < 8 ||
+      password.length > 72
     ) {
       return res.status(400).json({
         success: false,
-        message: "Name, phone number and password are required",
+        message:
+          "Enter a valid name, phone number and password (8–72 characters)",
       });
     }
 
-    const normalizedPhone = phoneNumber.trim();
-
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid 10-digit Indian phone number",
-      });
-    }
-
-    if (password.length < 8 || password.length > 72) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be 8 to 72 characters",
-      });
-    }
-
-    const existingAdmin = await User.findOne({ role: "admin" });
-
-    if (existingAdmin) {
+    if (await User.exists({ role: "admin" })) {
       return res.status(409).json({
         success: false,
         message: "An admin account already exists",
       });
     }
 
-    const existingUser = await User.findOne({
-      phoneNumber: normalizedPhone,
-    });
-
-    if (existingUser) {
+    if (await User.exists({ phoneNumber: phone })) {
       return res.status(409).json({
         success: false,
         message: "Phone number is already registered",
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
-
     const admin = await User.create({
       name: name.trim(),
-      phoneNumber: normalizedPhone,
-      password: hashedPassword,
+      phoneNumber: phone,
+      password: await bcrypt.hash(password, 12),
       role: "admin",
     });
 
     return res.status(201).json({
       success: true,
       message: "Admin registered successfully",
-      user: {
-        id: admin._id,
-        name: admin.name,
-        phoneNumber: admin.phoneNumber,
-        role: admin.role,
-      },
+      user: publicUser(admin),
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "Phone number is already registered",
-      });
-    }
-
     console.error("Admin registration error:", error.message);
 
-    return res.status(500).json({
+    return res.status(error.code === 11000 ? 409 : 500).json({
       success: false,
-      message: "Admin registration failed",
+      message:
+        error.code === 11000
+          ? "Phone number is already registered"
+          : "Admin registration failed",
     });
   }
 };
 
-
-// CREATE OWNER — admin authentication is required at the route
-const createOwner = async (req, res) => {
+// CUSTOMER REGISTRATION — CAPTCHA + details.
+const registerCustomer = async (req, res) => {
   try {
+    if (!validateCaptcha(req, res)) return;
+
     const { name, phoneNumber, password } = req.body;
+    const phone = normalizePhone(phoneNumber);
 
     if (
       typeof name !== "string" ||
-      typeof phoneNumber !== "string" ||
+      !name.trim() ||
+      !PHONE_REGEX.test(phone) ||
       typeof password !== "string" ||
-      !name.trim()
+      password.length < 8 ||
+      password.length > 72
     ) {
       return res.status(400).json({
         success: false,
-        message: "Name, phone number and password are required",
+        message:
+          "Enter a valid name, phone number and password (8–72 characters)",
       });
     }
 
-    const normalizedPhone = phoneNumber.trim();
-
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid 10-digit Indian phone number",
-      });
-    }
-
-    if (password.length < 8 || password.length > 72) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be 8 to 72 characters",
-      });
-    }
-
-    const existingUser = await User.findOne({
-      phoneNumber: normalizedPhone,
-    });
-
-    if (existingUser) {
+    if (await User.exists({ phoneNumber: phone })) {
       return res.status(409).json({
         success: false,
         message: "This phone number is already registered",
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const user = await User.create({
+      name: name.trim(),
+      phoneNumber: phone,
+      password: await bcrypt.hash(password, 12),
+      role: "user",
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration successful",
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Customer registration error:", error.message);
+
+    return res.status(error.code === 11000 ? 409 : 500).json({
+      success: false,
+      message:
+        error.code === 11000
+          ? "This phone number is already registered"
+          : "Could not register user",
+    });
+  }
+};
+
+// OWNER REGISTRATION — CAPTCHA + matching unassigned shop.
+
+const registerOwner = async (req, res) => {
+  let createdOwnerId = null;
+
+  try {
+    if (!validateCaptcha(req, res)) return;
+
+    const { name, phoneNumber, password } = req.body;
+    const phone = normalizePhone(phoneNumber);
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      !PHONE_REGEX.test(phone) ||
+      typeof password !== "string" ||
+      password.length < 8 ||
+      password.length > 72
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "சரியான பெயர், 10 இலக்க மொபைல் எண் மற்றும் password உள்ளிடவும்.",
+      });
+    }
+
+    // ஏற்கெனவே இந்த எண்ணில் கணக்கு உள்ளதா?
+    if (await User.exists({ phoneNumber: phone })) {
+      return res.status(409).json({
+        success: false,
+        message: "இந்த மொபைல் எண்ணில் ஏற்கெனவே கணக்கு உள்ளது.",
+      });
+    }
+
+    // இந்த எண்ணுடன் பொருந்தும், Owner இல்லாத கடையைக் கண்டறிதல்
+    const shop = await Shop.findOne({
+      mobileNumber: phone,
+      owner: null,
+    });
+
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "இந்த மொபைல் எண்ணுடன் இணைக்கப்படாத கடை கிடைக்கவில்லை.",
+      });
+    }
+
+    // Owner account உருவாக்குதல்
+    const owner = await User.create({
+      name: name.trim(),
+      phoneNumber: phone,
+      password: await bcrypt.hash(password, 12),
+      role: "owner",
+      shop: shop._id,
+    });
+
+    createdOwnerId = owner._id;
+
+    // Owner இல்லாத கடைக்கு மட்டுமே இணைக்க அனுமதி
+    const linkedShop = await Shop.findOneAndUpdate(
+      {
+        _id: shop._id,
+        mobileNumber: phone,
+        owner: null,
+      },
+      {
+        $set: { owner: owner._id },
+      },
+      { new: true }
+    );
+
+    if (!linkedShop) {
+      // இணைப்பு தோல்வியடைந்தால் உருவாக்கிய கணக்கை நீக்குதல்
+      await User.deleteOne({ _id: owner._id });
+      createdOwnerId = null;
+
+      return res.status(409).json({
+        success: false,
+        message:
+          "இந்தக் கடை ஏற்கெனவே மற்றொரு Owner-உடன் இணைக்கப்பட்டுள்ளது.",
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Owner கணக்கு உருவாக்கப்பட்டு கடையுடன் இணைக்கப்பட்டது.",
+      user: publicUser(owner),
+    });
+  } catch (error) {
+    console.error("Owner registration error:", error.message);
+
+    // மற்றொரு request காரணமாக unique phone conflict ஏற்பட்டால்,
+    // இன்னும் இணைக்கப்படாத account-ஐ சுத்தம் செய்தல்
+    if (createdOwnerId) {
+      try {
+        const linked = await Shop.exists({ owner: createdOwnerId });
+
+        if (!linked) {
+          await User.deleteOne({ _id: createdOwnerId });
+        }
+      } catch (cleanupError) {
+        console.error("Owner cleanup error:", cleanupError.message);
+      }
+    }
+
+    return res.status(error.code === 11000 ? 409 : 500).json({
+      success: false,
+      message:
+        error.code === 11000
+          ? "இந்த மொபைல் எண்ணில் ஏற்கெனவே கணக்கு உள்ளது."
+          : "Owner கணக்கை உருவாக்க முடியவில்லை.",
+    });
+  }
+};
+
+
+// LOGIN — CAPTCHA + phone number + password.
+const loginUser = async (req, res) => {
+  const phone = normalizePhone(req.body.phoneNumber);
+
+  try {
+    if (!validateCaptcha(req, res)) {
+      await recordLogin(req, {
+        phoneNumber: phone || "unknown",
+        status: "failed",
+        reason: "invalid-captcha",
+      });
+
+      return;
+    }
+
+    const { password } = req.body;
+
+    if (
+      !PHONE_REGEX.test(phone) ||
+      typeof password !== "string" ||
+      !password
+    ) {
+      await recordLogin(req, {
+        phoneNumber: phone || "unknown",
+        status: "failed",
+        reason: "invalid-phone-or-password",
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: "Valid phone number and password are required",
+      });
+    }
+
+    const user = await User.findOne({
+      phoneNumber: phone,
+    }).select("+password");
+
+    if (!user || !user.isActive) {
+      await recordLogin(req, {
+        phoneNumber: phone,
+        role: user?.role,
+        userId: user?._id,
+        status: "failed",
+        reason: user ? "inactive-account" : "invalid-password",
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid phone number or password",
+      });
+    }
+
+    if (!(await bcrypt.compare(password, user.password))) {
+      await recordLogin(req, {
+        phoneNumber: phone,
+        role: user.role,
+        userId: user._id,
+        status: "failed",
+        reason: "invalid-password",
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid phone number or password",
+      });
+    }
+
+    const token = createToken(user);
+
+    await recordLogin(req, {
+      phoneNumber: phone,
+      role: user.role,
+      userId: user._id,
+      status: "success",
+      reason: "success",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Login successful",
+      token,
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Login error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not login",
+    });
+  }
+};
+
+// ADMIN-CREATED OWNER ACCOUNT — protected route.
+const createOwner = async (req, res) => {
+  try {
+    const { name, phoneNumber, password } = req.body;
+    const phone = normalizePhone(phoneNumber);
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      !PHONE_REGEX.test(phone) ||
+      typeof password !== "string" ||
+      password.length < 8 ||
+      password.length > 72
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid name, phone number and password are required",
+      });
+    }
+
+    if (await User.exists({ phoneNumber: phone })) {
+      return res.status(409).json({
+        success: false,
+        message: "This phone number is already registered",
+      });
+    }
 
     const owner = await User.create({
       name: name.trim(),
-      phoneNumber: normalizedPhone,
-      password: hashedPassword,
+      phoneNumber: phone,
+      password: await bcrypt.hash(password, 12),
       role: "owner",
     });
 
     return res.status(201).json({
       success: true,
       message: "Owner account created successfully",
-      user: {
-        id: owner._id,
-        name: owner.name,
-        phoneNumber: owner.phoneNumber,
-        role: owner.role,
-      },
+      user: publicUser(owner),
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "This phone number is already registered",
-      });
-    }
-
     console.error("Owner creation error:", error.message);
 
-    return res.status(500).json({
+    return res.status(error.code === 11000 ? 409 : 500).json({
       success: false,
-      message: "Owner account creation failed",
+      message:
+        error.code === 11000
+          ? "This phone number is already registered"
+          : "Owner account creation failed",
     });
   }
 };
 
-
-// USER SELF-REGISTRATION
-const registerCustomer = async (req, res) => {
-  try {
-    const { name, phoneNumber, password } = req.body;
-
-    if (
-      typeof name !== "string" ||
-      typeof phoneNumber !== "string" ||
-      typeof password !== "string" ||
-      !name.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, phone number and password are required",
-      });
-    }
-
-    const normalizedPhone = phoneNumber.trim();
-
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid 10-digit Indian phone number",
-      });
-    }
-
-    if (password.length < 8 || password.length > 72) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be 8 to 72 characters",
-      });
-    }
-
-    const existingUser = await User.findOne({
-      phoneNumber: normalizedPhone,
-    });
-
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: "This phone number is already registered",
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const customer = await User.create({
-      name: name.trim(),
-      phoneNumber: normalizedPhone,
-      password: hashedPassword,
-      role: "user",
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "User registered successfully",
-      user: {
-        id: customer._id,
-        name: customer.name,
-        phoneNumber: customer.phoneNumber,
-        role: customer.role,
-      },
-    });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "This phone number is already registered",
-      });
-    }
-
-    console.error("User registration error:", error.message);
-
-    return res.status(500).json({
-      success: false,
-      message: "User registration failed",
-    });
-  }
-};
-
-
-
-// OWNER SELF-REGISTRATION
-const registerOwner = async (req, res) => {
-  try {
-    const { name, phoneNumber, password } = req.body;
-
-    if (
-      typeof name !== "string" ||
-      typeof phoneNumber !== "string" ||
-      typeof password !== "string" ||
-      !name.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, phone number and password are required",
-      });
-    }
-
-    const normalizedPhone = phoneNumber.trim();
-
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid 10-digit Indian phone number",
-      });
-    }
-
-    if (password.length < 8 || password.length > 72) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be 8 to 72 characters",
-      });
-    }
-
-    const existingUser = await User.findOne({
-      phoneNumber: normalizedPhone,
-    });
-if (existingUser) {
-  console.log("Owner registration conflict:", {
-    phoneNumber: normalizedPhone,
-    existingRole: existingUser.role,
-    existingId: existingUser._id,
-  });
-
-  return res.status(409).json({
-    success: false,
-    message: "This phone number is already registered",
-  });
-}
-
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const owner = await User.create({
-      name: name.trim(),
-      phoneNumber: normalizedPhone,
-      password: hashedPassword,
-      role: "owner",
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Owner registered successfully",
-      user: {
-        id: owner._id,
-        name: owner.name,
-        phoneNumber: owner.phoneNumber,
-        role: owner.role,
-      },
-    });
-  } catch (error) {
-    if (error.code === 11000) {
-  console.error("Duplicate key details:", error.keyValue);
-
-  return res.status(409).json({
-    success: false,
-    message: "Duplicate database value",
-    details: error.keyValue,
-  });
-}
-
-    console.error("Owner registration error:", error.message);
-
-    return res.status(500).json({
-      success: false,
-      message: "Owner registration failed",
-    });
-  }
-};
-
-
-// GET ALL REGISTERED MEMBERS — admin only
+// ADMIN-ONLY: list customer accounts.
 const getUsers = async (req, res) => {
   try {
     const users = await User.find({ role: "user" })
@@ -388,102 +498,11 @@ const getUsers = async (req, res) => {
   }
 };
 
-
-// LOGIN USER
-const loginUser = async (req, res) => {
-  try {
-    const { phoneNumber, password } = req.body;
-
-    if (
-      typeof phoneNumber !== "string" ||
-      typeof password !== "string" ||
-      !phoneNumber.trim() ||
-      !password
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number and password are required",
-      });
-    }
-
-    const normalizedPhone = phoneNumber.trim();
-
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid 10-digit Indian phone number",
-      });
-    }
-
-    const user = await User.findOne({
-      phoneNumber: normalizedPhone,
-    }).select("+password");
-
-    if (!user || !user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid phone number or password",
-      });
-    }
-
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password
-    );
-
-    if (!passwordMatches) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid phone number or password",
-      });
-    }
-
-    if (!process.env.JWT_SECRET) {
-      console.error("JWT_SECRET is missing from .env");
-
-      return res.status(500).json({
-        success: false,
-        message: "Authentication service is not configured",
-      });
-    }
-
-    const token = jwt.sign(
-      { userId: user._id.toString() },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "1h",
-        issuer: "kadai-edu",
-        audience: "kadai-edu-users",
-      }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Login successful",
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        phoneNumber: user.phoneNumber,
-        role: user.role,
-      },
-    });
-  } catch (error) {
-    console.error("Login error:", error.message);
-
-    return res.status(500).json({
-      success: false,
-      message: "Login failed",
-    });
-  }
-};
-
-
 module.exports = {
   registerUser,
   registerCustomer,
-  createOwner,
   registerOwner,
   loginUser,
+  createOwner,
   getUsers,
 };
