@@ -1,8 +1,6 @@
 const Shop = require("../models/Shop");
 const User = require("../models/User");
 
-// CREATE - Add a new shop
-// CREATE - Add a new shop
 const createShop = async (req, res) => {
   try {
     const {
@@ -13,6 +11,7 @@ const createShop = async (req, res) => {
       mobileNumber,
     } = req.body;
 
+    // Validate required fields
     if (
       !shopName ||
       !category ||
@@ -27,20 +26,21 @@ const createShop = async (req, res) => {
     }
 
     // Validate shop mobile number
-    if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
+    if (!/^[6-9]\d{9}$/.test(mobileNumber.trim())) {
       return res.status(400).json({
         success: false,
         message: "Enter a valid 10-digit mobile number",
       });
     }
 
+    // Create shop without assigning an owner
     const shop = await Shop.create({
-      shopName,
-      category,
-      area,
-      pincode,
-      mobileNumber,
-      owner: req.user._id,
+      shopName: shopName.trim(),
+      category: category.trim(),
+      area: area.trim(),
+      pincode: pincode.trim(),
+      mobileNumber: mobileNumber.trim(),
+      owner: null,
     });
 
     return res.status(201).json({

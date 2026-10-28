@@ -423,7 +423,7 @@ const loginUser = async (req, res) => {
   }
 };
 
-// ADMIN-CREATED OWNER ACCOUNT — protected route.
+// ADMIN-CREATED OWNER ACCOUNT
 const createOwner = async (req, res) => {
   try {
     const { name, phoneNumber, password } = req.body;
@@ -443,6 +443,7 @@ const createOwner = async (req, res) => {
       });
     }
 
+    // Check existing user
     if (await User.exists({ phoneNumber: phone })) {
       return res.status(409).json({
         success: false,
@@ -450,17 +451,38 @@ const createOwner = async (req, res) => {
       });
     }
 
+    // Find unassigned shop using mobile number
+    const shop = await Shop.findOne({
+      mobileNumber: phone,
+      owner: null,
+    });
+
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No unassigned shop found for this mobile number. Create the shop first or check the number.",
+      });
+    }
+
+    // Create owner and link shop
     const owner = await User.create({
       name: name.trim(),
       phoneNumber: phone,
       password: await bcrypt.hash(password, 12),
       role: "owner",
+      shop: shop._id,
     });
+
+    // Assign shop to owner
+    shop.owner = owner._id;
+    await shop.save();
 
     return res.status(201).json({
       success: true,
-      message: "Owner account created successfully",
+      message: "Owner account created and shop linked successfully",
       user: publicUser(owner),
+      shop,
     });
   } catch (error) {
     console.error("Owner creation error:", error.message);
@@ -475,11 +497,13 @@ const createOwner = async (req, res) => {
   }
 };
 
-// ADMIN-ONLY: list customer accounts.
+// ADMIN-ONLY: List customer and owner accounts.
 const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ role: "user" })
-      .select("name phoneNumber shop isActive createdAt")
+    const users = await User.find({
+      role: { $in: ["user", "owner"] },
+    })
+      .select("name phoneNumber role shop isActive createdAt")
       .populate("shop", "shopName")
       .sort({ createdAt: -1 });
 
@@ -498,6 +522,41 @@ const getUsers = async (req, res) => {
   }
 };
 
+
+// ADMIN-ONLY: Get login activity
+const getLoginActivity = async (req, res) => {
+  try {
+    const activities = await LoginHistory.find()
+      .populate("user", "name phoneNumber role")
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
+
+    const formattedActivities = activities.map((activity) => ({
+      _id: activity._id,
+      name: activity.user?.name || "தெரியவில்லை",
+      phoneNumber: activity.phoneNumber,
+      role: activity.role || activity.user?.role || "unknown",
+      status: activity.status,
+      reason: activity.reason,
+      createdAt: activity.createdAt,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: formattedActivities.length,
+      activities: formattedActivities,
+    });
+  } catch (error) {
+    console.error("Get login activity error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Login activity விவரங்களைப் பெற முடியவில்லை.",
+    });
+  }
+};
+
 module.exports = {
   registerUser,
   registerCustomer,
@@ -505,4 +564,5 @@ module.exports = {
   loginUser,
   createOwner,
   getUsers,
+  getLoginActivity,
 };

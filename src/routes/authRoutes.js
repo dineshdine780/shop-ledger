@@ -9,6 +9,7 @@ const {
   registerOwner,
   loginUser,
   getUsers,
+  getLoginActivity,
 } = require("../controllers/authController");
 
 const { createCaptcha } = require("../utils/captcha");
@@ -62,6 +63,14 @@ router.get(
   protect,
   authorizeRoles("admin"),
   getUsers
+);
+
+// Get login activity — admin only
+router.get(
+  "/login-activity",
+  protect,
+  authorizeRoles("admin"),
+  getLoginActivity
 );
 
 module.exports = router;
