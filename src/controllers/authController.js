@@ -334,6 +334,7 @@ const loginUser = async (req, res) => {
   const phone = normalizePhone(req.body.phoneNumber);
 
   try {
+    // 1. Validate CAPTCHA
     if (!validateCaptcha(req, res)) {
       await recordLogin(req, {
         phoneNumber: phone || "unknown",
@@ -346,6 +347,7 @@ const loginUser = async (req, res) => {
 
     const { password } = req.body;
 
+    // 2. Validate phone number and password
     if (
       !PHONE_REGEX.test(phone) ||
       typeof password !== "string" ||
@@ -363,6 +365,7 @@ const loginUser = async (req, res) => {
       });
     }
 
+    // 3. Find user
     const user = await User.findOne({
       phoneNumber: phone,
     }).select("+password");
@@ -382,7 +385,58 @@ const loginUser = async (req, res) => {
       });
     }
 
-    if (!(await bcrypt.compare(password, user.password))) {
+    // 4. Check whether login is locked
+    const now = Date.now();
+
+    if (
+      user.loginLockedUntil &&
+      user.loginLockedUntil.getTime() > now
+    ) {
+      const remainingSeconds = Math.ceil(
+        (user.loginLockedUntil.getTime() - now) / 1000
+      );
+
+      await recordLogin(req, {
+        phoneNumber: phone,
+        role: user.role,
+        userId: user._id,
+        status: "failed",
+        reason: "too-many-attempts",
+      });
+
+      return res.status(429).json({
+        success: false,
+        message: `Too many failed attempts. Try again in ${remainingSeconds} seconds.`,
+        remainingSeconds,
+      });
+    }
+
+    // 5. Clear expired lock
+    if (
+      user.loginLockedUntil &&
+      user.loginLockedUntil.getTime() <= now
+    ) {
+      user.failedLoginAttempts = 0;
+      user.loginLockedUntil = null;
+    }
+
+    // 6. Check password
+    const isPasswordCorrect = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!isPasswordCorrect) {
+      user.failedLoginAttempts =
+        (user.failedLoginAttempts || 0) + 1;
+
+      // Lock account after 5 incorrect passwords
+      if (user.failedLoginAttempts >= 5) {
+        user.loginLockedUntil = new Date(Date.now() + 2 * 60 * 1000);
+      }
+
+      await user.save();
+
       await recordLogin(req, {
         phoneNumber: phone,
         role: user.role,
@@ -391,14 +445,31 @@ const loginUser = async (req, res) => {
         reason: "invalid-password",
       });
 
+      if (user.loginLockedUntil) {
+        return res.status(429).json({
+          success: false,
+          message:
+            "Too many incorrect passwords. Login is blocked for 2 minutes.",
+          remainingSeconds: 120,
+        });
+      }
+
       return res.status(401).json({
         success: false,
         message: "Invalid phone number or password",
+        attemptsRemaining: 5 - user.failedLoginAttempts,
       });
     }
 
+    // 7. Successful login: reset failed attempts
+    user.failedLoginAttempts = 0;
+    user.loginLockedUntil = null;
+    await user.save();
+
+    // 8. Create token
     const token = createToken(user);
 
+    // 9. Record successful login
     await recordLogin(req, {
       phoneNumber: phone,
       role: user.role,
@@ -422,6 +493,7 @@ const loginUser = async (req, res) => {
     });
   }
 };
+
 
 // ADMIN-CREATED OWNER ACCOUNT
 const createOwner = async (req, res) => {
@@ -523,6 +595,99 @@ const getUsers = async (req, res) => {
 };
 
 
+// ADMIN-ONLY: Update member details
+const updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phoneNumber, isActive } = req.body;
+
+    // Validate member ID
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "தவறான உறுப்பினர் ID.",
+      });
+    }
+
+    // Validate name
+    if (typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "பெயரை உள்ளிடவும்.",
+      });
+    }
+
+    // Validate mobile number
+    if (
+      typeof phoneNumber !== "string" ||
+      !/^[6-9]\d{9}$/.test(phoneNumber)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "சரியான 10 இலக்க மொபைல் எண்ணை உள்ளிடவும்.",
+      });
+    }
+
+    // Validate account status
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "கணக்கு நிலை சரியாக இல்லை.",
+      });
+    }
+
+    // Find user or owner; admin accounts cannot be edited here
+    const member = await User.findOne({
+      _id: id,
+      role: { $in: ["user", "owner"] },
+    });
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        message: "உறுப்பினர் கிடைக்கவில்லை.",
+      });
+    }
+
+    // Check whether another account uses this phone number
+    const existingUser = await User.findOne({
+      phoneNumber,
+      _id: { $ne: id },
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "இந்த மொபைல் எண் ஏற்கனவே பயன்படுத்தப்படுகிறது.",
+      });
+    }
+
+    member.name = name.trim();
+    member.phoneNumber = phoneNumber;
+    member.isActive = isActive;
+
+    await member.save();
+
+    const updatedUser = await User.findById(member._id)
+      .select("name phoneNumber role shop isActive createdAt")
+      .populate("shop", "shopName");
+
+    return res.status(200).json({
+      success: true,
+      message: "உறுப்பினர் விவரங்கள் வெற்றிகரமாக மாற்றப்பட்டன.",
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Update member error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "உறுப்பினர் விவரங்களை மாற்ற முடியவில்லை.",
+    });
+  }
+};
+
+
 // ADMIN-ONLY: Get login activity
 const getLoginActivity = async (req, res) => {
   try {
@@ -565,4 +730,5 @@ module.exports = {
   createOwner,
   getUsers,
   getLoginActivity,
+  updateUser,
 };

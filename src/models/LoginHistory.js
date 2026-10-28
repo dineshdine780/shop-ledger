@@ -40,6 +40,7 @@ const loginHistorySchema = new mongoose.Schema(
         "otp-limit-exceeded",
         "success",
         "other",
+        "too-many-attempts",
       ],
       default: "other",
     },

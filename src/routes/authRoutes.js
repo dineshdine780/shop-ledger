@@ -10,6 +10,7 @@ const {
   loginUser,
   getUsers,
   getLoginActivity,
+  updateUser,
 } = require("../controllers/authController");
 
 const { createCaptcha } = require("../utils/captcha");
@@ -63,6 +64,12 @@ router.get(
   protect,
   authorizeRoles("admin"),
   getUsers
+);
+router.patch(
+  "/users/:id",
+  protect,
+  authorizeRoles("admin"),
+  updateUser
 );
 
 // Get login activity — admin only
