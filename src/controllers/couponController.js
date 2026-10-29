@@ -81,6 +81,7 @@ const getAllCoupons = async (req, res) => {
 const getAvailableCoupons = async (req, res) => {
   try {
     const now = new Date();
+    const userId = req.user?._id;
 
     const coupons = await Coupon.find({
       isActive: true,
@@ -97,13 +98,28 @@ const getAvailableCoupons = async (req, res) => {
     })
       .populate("shops", "shopName name")
       .select(
-        "code discountType discountValue minimumPurchase maximumDiscount appliesToAllShops shops usageLimit usedCount oneUsePerUser startDate endDate"
+        "code discountType discountValue minimumPurchase maximumDiscount appliesToAllShops shops usageLimit usedCount oneUsePerUser startDate endDate usedBy"
       )
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const updatedCoupons = coupons.map((coupon) => {
+      const alreadyUsed =
+        coupon.oneUsePerUser &&
+        userId &&
+        (coupon.usedBy || []).some(
+          (id) => id.toString() === userId.toString()
+        );
+
+      return {
+        ...coupon,
+        alreadyUsed: Boolean(alreadyUsed),
+      };
+    });
 
     return res.json({
       success: true,
-      coupons,
+      coupons: updatedCoupons,
     });
   } catch (error) {
     console.error("Get available coupons error:", error);

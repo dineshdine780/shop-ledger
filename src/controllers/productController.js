@@ -37,6 +37,7 @@ const createProduct = async (req, res) => {
   try {
     const { productName, category, price, stock, shopId } = req.body;
 
+    // Validate required fields
     if (
       !productName?.trim() ||
       !category?.trim() ||
@@ -49,6 +50,7 @@ const createProduct = async (req, res) => {
       });
     }
 
+    // Validate price and stock
     if (
       !Number.isFinite(Number(price)) ||
       Number(price) < 0 ||
@@ -61,6 +63,7 @@ const createProduct = async (req, res) => {
       });
     }
 
+    // Validate shop ID
     if (!mongoose.isValidObjectId(shopId)) {
       return res.status(400).json({
         success: false,
@@ -68,6 +71,7 @@ const createProduct = async (req, res) => {
       });
     }
 
+    // Verify shop ownership
     const shop = await Shop.findOne({
       _id: shopId,
       mobileNumber: req.user.phoneNumber,
@@ -80,8 +84,30 @@ const createProduct = async (req, res) => {
       });
     }
 
+    const normalizedProductName = productName.trim();
+
+    // Check whether the same product already exists in this shop
+    const existingProduct = await Product.findOne({
+      shop: shop._id,
+      productName: {
+        $regex: `^${normalizedProductName.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        )}$`,
+        $options: "i",
+      },
+    });
+
+    if (existingProduct) {
+      return res.status(409).json({
+        success: false,
+        message: "இந்தக் கடையில் இந்தப் பொருள் ஏற்கெனவே உள்ளது.",
+      });
+    }
+
+    // Create product
     const product = await Product.create({
-      productName: productName.trim(),
+      productName: normalizedProductName,
       category: category.trim(),
       price: Number(price),
       stock: stock === undefined ? 0 : Number(stock),
@@ -102,6 +128,7 @@ const createProduct = async (req, res) => {
     });
   }
 };
+
 
 // PUT - Update an owner's product
 const updateProduct = async (req, res) => {

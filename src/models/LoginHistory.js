@@ -43,7 +43,8 @@ const loginHistorySchema = new mongoose.Schema(
         "too-many-attempts",
       ],
       default: "other",
-    },
+    },  
+
 
     ipAddress: {
       type: String,
